@@ -1,0 +1,769 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- vim: et:ts=2:sw=2
+  -->
+<?xml-model href="rfc7991bis.rnc"?><!DOCTYPE rfc [
+  <!ENTITY nbsp    "&#160;">
+  <!ENTITY zwsp   "&#8203;">
+  <!ENTITY nbhy   "&#8209;">
+  <!ENTITY wj     "&#8288;">
+]>
+
+<rfc
+  xmlns:xi="http://www.w3.org/2001/XInclude"
+  category="exp"
+  docName="draft-lamparter-lsr-v6ops-pd-aargh"
+  ipr="trust200902"
+  obsoletes=""
+  submissionType="IETF"
+  consensus="true"
+  xml:lang="en"
+  version="3">
+  <front>
+    <title abbrev="pd-aargh">Prefix Dissemination for Semi-Automatic Addressing and Renumbering</title>
+    <seriesInfo name="Internet-Draft" value="draft-lamparter-lsr-v6ops-pd-aargh"/>
+    <author fullname="David 'equinox' Lamparter" initials="D" surname="Lamparter">
+      <organization>NetDEF, Inc.</organization>
+      <address>
+        <postal>
+          <city>San Jose</city>
+          <country>USA</country>
+        </postal>
+        <email>equinox@diac24.net</email>
+        <email>equinox@opensourcerouting.org</email>
+      </address>
+    </author>
+
+    <date year="2023"/>
+    <area>Internet</area>
+    <workgroup>Link-state routing</workgroup>
+    <keyword>ipv6</keyword>
+
+    <abstract>
+      <t>
+          Between large enterprise networks that can reasonably use their own
+          IPv6 address space and small home and office networks that do not
+          utilize a complex routing topology, there is an intermediate space
+          where a network may need to utilize a nontrivial routed topology but
+          still connect to the internet in a plain "customer" role, with IPv6
+          address space being assigned over e.g.
+          <xref target="DHCPv6">DHCPv6-PD</xref>.
+      </t>
+      <t>
+          This poses a yet-unsolved issue that the prefix(es) assigned by the
+          ISP may change, either frequently due to operational practice, or
+          infrequently on some external events like loss of prefix assignment
+          state.  This change in prefix needs to propagate, at minimum,
+          into <xref target="ADDRCONF"/> mechanisms, but frequently also other
+          components like firewalls, naming systems, etc.
+      </t>
+    </abstract>
+  </front>
+
+  <middle>
+    <section>
+      <name>Introduction and history</name>
+      <t>
+          Renumbering is a longstanding, non-trivial and well-known problem
+          with IPv6 networks.  Being driven entirely by real-world operational
+          considerations and conditions - a "pure" IPv6 network in a perfect
+          world need never renumber - has turned into somewhat of a sour note,
+          given that (almost?) no one ever voluntarily renumbers.
+      </t>
+      <t>
+          There is a large body of applicable context on this topic.  The
+          <xref target="NEEDSWORK">Renumbering Still Needs Work</xref> document
+          has gone as far as spawning a (since concluded) IETF working group,
+          6renum, dedicated to this topic.  Output from this working group
+          includes a <xref target="RFC7010">Gap Analysis</xref> document, a
+          <xref target="RFC6866">Problem Statement</xref>, and
+          <xref target="RFC6879">Scenarios, Considerations and Methods</xref>.
+          Furthermore, the process of adding a new prefix in make-before-break
+          manner before removing an old one was described in
+          <xref target="RFC4192"/>.
+      </t>
+      <t>
+          <em>TBD: <xref target="RFC2894"/></em>
+      </t>
+      <t>
+          <em>TBD: fill in homenet and autoconf context too / full-auto</em>
+          <xref target="RFC7695"/>
+      </t>
+      <t>
+          This document takes a "router-down" perspective without attempting
+          to take all address management and policy out of the operator's
+          hands.  For perspective, this relates to above documents as follows:
+      </t>
+      <ul>
+        <li>
+            Generally, the problem considered here is renumbering routers
+            (<xref target="NEEDSWORK">RFC5887 Section 3.1</xref>,
+            <xref target="RFC7010">RFC7010 Section 5.2 and 9.1</xref>).
+        </li>
+        <li>
+            Only communicating available prefixes and making subnets or
+            host addresses out of them is considered here.  How to apply
+            the results to an innumerable amount of entities that may need
+            reconfiguring or flushing of state (<xref target="NEEDSWORK">RFC5887
+            Section 5.2</xref>) is a giant of its own, e.g.
+            <xref target="LEROY"/> discusses using macros to convene this.
+            The <xref target="NETCONF"/> ecosystem is also relevant here, both
+            to query prefix information from the routing system, as well as to
+            apply it.
+        </li>
+        <li>
+            The very heart of this document is challenging
+            <xref target="RFC6866">"Static Addresses Imply Static
+            Prefixes"</xref>, by allowing static addressing with dynamic
+            prefixes.
+        </li>
+        <li>
+            <xref target="RFC7010">RFC 7010 Section 6.3 (first bullet point,
+            "Self-Contained Configuration in Individual Devices")</xref>
+            already documents the concept of "keywords or variables" that
+            reduce configuration change impact from renumbering by reusing
+            bits "defined as a value once".  It proceeds to say that this
+            "still means that every device needs to be individually updated".
+            This document formalizes this very concept and provides a
+            mechanism to automate updating this information.
+        </li>
+      </ul>
+      <section>
+        <name>Rationale and bootstrap considerations</name>
+        <t>
+            There are many places and methods that could be used to
+            communicate prefixes to be used in a network.  Using the routing
+            system to do this is a better choice than many others for several
+            reasons:
+        </t>
+        <ol>
+          <li>
+              At its most basic, to establish IPv6 reachability given a
+              number of (working) lower layer links, two things are needed:
+              addresses and routing information.  When the routing domain has
+              come up, the network should work, and if addresses are assigned
+              statically, it hopefully will.  This mechanism attempts to not
+              worsen this situation - the network should work after routing
+              has come up.
+          </li>
+          <li>
+              Performing renumbering through configuration management systems
+              can lead to the configuration changes themselves breaking the
+              ability of the configuration management system to apply
+              configuration.  Even if make-before-break semantics are followed
+              throughout, ordering constraints may exist - and be very hard
+              to detect.  For example, if new addresses are configured on
+              the management system and some routers, the management system's
+              network stack may decide to (in fact, is likely to) immediately
+              use the new addresses in source address selection.  If some
+              firewall device has not been updated yet, it will block these
+              connections.  It may also block connections to itself.  This is
+              not an unsolvable problem, but it has both significant risk, as
+              well as poor verifiability - even if it works in a test, ordering
+              constraints can be subject to race conditions that may randomly
+              show up in a later execution of the exact same renumbering
+              event.
+          </li>
+          <li>
+              Providing alternate or fallback connectivity specifically for
+              management can be costly.  Particularly devices used in
+              small to medium business scenarios - the exact target of this
+              approach - may support a limited routing table size, and may
+              not have any VRF support.  Providing parallel ULA addressing
+              doubles the resource need when added next to only one GUA prefix.
+              Physically connecting out-of-band management ports can be
+              very difficult with infrastructure cabling constraints.
+          </li>
+          <li>
+              If address configuration is kept in ephemeral state, this can
+              result in bootstrap problems.  Both IS-IS and OSPFv3 will start
+              up on exclusively link-local addresses.
+          </li>
+        </ol>
+        <t>
+            Aside from above applicability considerations, the OSPFv3 and IS-IS
+            link state routing protocols provide discovery and flooding
+            mechanisms that are very desirable for disseminating available
+            prefixes. The limited size and expected count of this data is also
+            a great match for the capabilities of these protocols.
+        </t>
+      </section>
+      <section>
+        <name>Non-goals</name>
+        <t>
+            This document does not attempt any kind of automatic prefix or
+            address assignment in the "second half" of the prefix.  It only
+            attempts a mechanism to convey the "first half" of a prefix, and
+            deal with changing it - while keeping the second half firmly under
+            operator control.
+        </t>
+      </section>
+    </section>
+
+    <section>
+      <name>Requirements Language</name>
+      <t>
+          The key words "MUST", "MUST NOT", "REQUIRED", "SHALL",
+          "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT
+          RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be
+          interpreted as described in BCP 14 <xref target="RFC2119"/>
+          <xref target="RFC8174"/> when, and only when, they appear in
+          all capitals, as shown here.
+      </t>
+    </section>
+
+    <section anchor="prefix-dissem">
+      <name>Disseminated prefix concept</name>
+      <t>
+          The behavior and encodings described in this document rely on the
+          concept of a disseminated prefix.  The semantics of such a prefix
+          are as follows:
+      </t>
+      <ul>
+        <li>
+            There is a flow of information from "upstream" sources of
+            assignment to "downstream" consumers of addressing information.
+        </li>
+        <li>
+            Disseminated prefixes are created by operator configuration and
+            policy, but this policy may not contain the actual prefix
+            and instead reference another upstream source.  In the primary
+            case this document attempts to address, one or more prefixes
+            will be picked up from one or more upstream ISPs.  DHCPv6 Prefix
+            Delegation and explicit assignment by the ISP are assumed to be
+            the most common sources of a prefix.  A randomly generated ULA
+            prefix may also be used, though this would mainly be useful to
+            just apply the same numbering that GUA prefixes receive.  ULA
+            prefixes should hopefully not need the renumbering feature.
+        </li>
+        <li>
+            Disseminated prefixes can in theory be carried in any arbitrary
+            way across the network.  This document describes carrying them in
+            <xref target="OSPFv3"/> or
+            <xref target="IS-IS"/>.  Care should be taken both when entering
+            this information into these protocols as well as when passing it
+            outside, to not create "information loops".  This is not expected
+            to be a problem since there is a clear upstream to downstream
+            flow direction with disseminated prefixes.
+        </li>
+        <li>
+            Prefixes (and host addresses) are carved out of a disseminated
+            prefix for actual use. The bits "filled in" to make these
+            assignments are always configured explicitly. This document does
+            not suggest any kind of automatic numbering.  Both prefix and
+            host assignments are called "carve-outs" in the remainder of this
+            document.
+        </li>
+        <li>
+            There may be use cases for creating a disseminated prefix as a
+            subnet of another disseminated prefix, but this is not expected to
+            be a primary use case in this document.  If this is done, the
+            latter prefix MUST be longer than (covered by) the first prefix to
+            establish a clear hierarchy.
+        </li>
+        <li>
+            Disseminated prefixes have a lifetime, which may be inherited from
+            their upstream source (e.g. DHCPv6), or be configured by the
+            operator (e.g. for a static assignment.)
+        </li>
+        <li>
+            Additional attributes can be placed on disseminated prefixes to
+            influence how the prefix is (or is not) used.  These attributes
+            may be sourced along with the prefix itself (again, DHCPv6) or
+            explicitly configured by the operator.  A plain 32-bit opaque
+            integer tag is specified in this document, other types of
+            attributes may be specified.
+        </li>
+      </ul>
+    </section>
+
+    <section anchor="example">
+      <name>Example scenario</name>
+      <figure align="center" anchor="example_topo">
+        <name>Basic prefix dissemination example</name>
+        <artwork align="center"><![CDATA[
++----------------------------+
+| ISP with DHCPv6-PD service |
++----------------------------+
+   |
+   |
++---------------------+
+|  DHCPv6-PD client   |  received PD delegation: 2001:db8:1234::/48
+|                     |
+|    - CE router -    |  configured prefix:      fd00:2001:db8::/48
+|                     |
+|     OSPF/IS-IS      |
++---------------------+
+   |              |
+   |       +----------------+  (loopback interface)
+   |       |   IS-IS/OSPF   |  config: "take /48, add :a::1 for /128"
+   |       |    router A    |  realized: 2001:db8:1234:a::1/128
+   |       |                |  realized: fd00:2001:db8:a::1/128
+   |       +----------------+
+   |              |  (LAN interface)
+   |              |  config: "take /48, add :aaaa: for /64"
+   |              |  realized: 2001:db8:1234:aaaa::/64
+   |              |  realized: fd00:2001:db8:aaaa::/64
+   |              |
+   |             ... hosts
+   |
+   |
++----------------+  (loopback interface)
+|   IS-IS/OSPF   |  config: "take /48, add :b::1 for /128"
+|    router B    |  realized: 2001:db8:1234:b::1/128
+|                |  realized: fd00:2001:db8:b::1/128
++----------------+
+   |  (LAN interface)
+   |  config: "take /48, add :bbbb: for /64"
+   |  realized: 2001:db8:1234:bbbb::/64
+   |  realized: fd00:2001:db8:bbbb::/64
+   |
+  ... hosts
+
+]]></artwork>
+      </figure>
+    </section>
+
+    <section anchor="use-dissem">
+      <name>Using a disseminated prefix</name>
+      <t>
+          First and most importantly, disseminated prefixes are not routing
+          information.  A system MUST NOT use disseminated prefix as input in
+          any kind of path calculation.  However, specific carve-outs MAY be
+          used to configure routing functions, e.g. announce the carve-out into
+          a routing protocol to create reachability.  This is purely a function
+          of automated configuration;  routing protocols MUST NOT introduce
+          any special behavior for routing information sourced in this way
+          even if the disseminated prefix was carried by the same routing
+          protocol.
+      </t>
+
+      <t>
+          Wherever a disseminated prefix turns into actual prefixes or
+          addresses used is considered a "consumer".  This would likely happen
+          on routers participating in the link state routing protocol, but
+          disseminated prefix information MAY also be queried by additional
+          applications (e.g. configuration management systems, name servers,
+          firewalls, etc.) and then realized into use.  Any system performing
+          this step is equally a "consumer" and MUST follow the steps outlined
+          below.
+      </t>
+
+      <t>
+          To make use of ("realize") a disseminated prefix, a carve-out MUST be
+          created by explicit operator configuration. This requires input to
+          fill in part of or all of the bits left unspecified in the prefix.
+          This input consists of 4 pieces:
+      </t>
+
+      <ol>
+        <li>
+            Minimum length of the disseminated prefix that is valid to make
+            this carve-out from.
+        </li>
+        <li>
+            Target length of the carve-out to be created;  this must be equal
+            to or longer than the minimum length above.  Common values are
+            64 for a subnet to be used for SLAAC and 128 for a host address.
+            Other lengths are also possible e.g. to configure firewall rules
+            for a range of networks or other subdivisions of the network.
+        </li>
+        <li>
+            Values for all bits of the prefix between minimum length and target
+            length.
+        </li>
+        <li>
+            Optionally, additional restrictions/filtering of disseminated
+            prefixes eligible to make this carve-out from, relying on
+            additional attributes the disseminated prefix may carry, e.g. the
+            opaque tag.  Other metadata may also influence this filtering,
+            e.g. reachability of the originating router, age of the
+            disseminated prefix, or a limit on the number of disseminated
+            prefixes used to realize a carve-outs.
+        </li>
+      </ol>
+
+      <t>
+          To realize a carve-out, the consumer considers the operator's
+          configuration against all disseminated prefixes available.  The
+          consumer MUST NOT arbitrarily limit the disseminated prefixes.  In
+          general, one configured carve-out can result in more than one actual
+          prefix if more than one disseminated prefix is available.  If there
+          is a limit on the number of actual prefixes / addresses, the consumer
+          MUST allow the operator to configure eligibility conditions and
+          evaluate them against all disseminated prefix.  Only if the limit
+          is still not met, the consumer MUST then fall back to using the
+          oldest disseminated prefix available.
+          <em>(TBD:  figure exact behavior.)</em>
+      </t>
+
+      <t>
+          The consumer MUST reevaluate carve-outs whenever a disseminated
+          prefix becomes available, is no longer available, or has a change in
+          any of its attributes.  There MAY be a minor delay or rate limiting
+          on this behavior to protect against overloads or degenerate
+          conditions.
+      </t>
+
+      <t>
+          A realized carve-out is ultimately a variable carrying a list of
+          prefixes, made available for use wherever that variable is
+          referenced.  A system MAY limit the number of prefixes carried (e.g.
+          to 1 prefix), but MUST support the empty case (no prefix) as it
+          occurs when no no disseminated prefixes are available.
+      </t>
+
+      <t>
+          Realizing a carve-out MUST NOT unadvisedly create a disseminated
+          prefix advertisement.  Realizing carve-outs is a local process that
+          does not create state in the network at large.
+      </t>
+
+      <t>
+          In order to fulfill the above requirements, any consumer residing
+          outside the routing system itself MUST retrieve all disseminated
+          prefix information from the routing system and MUST receive timely
+          updates on change to it.  Conversely, if routers provide methods of
+          access to disseminated prefix information (not realized), they MUST
+          include all such information with all of its metadata and attributes.
+      </t>
+    </section>
+
+    <section anchor="adv-dissem">
+      <name>Advertising a disseminated prefix</name>
+      <t>
+          As outlined in the disseminated prefix semantics, to create an
+          advertisement always requires a configured policy to determine what
+          to disseminate.  A system MUST NOT create a disseminated prefix
+          advertisement without operator policy.
+      </t>
+      <t>
+          A system MAY support consuming disseminated prefixes without support
+          for creating advertisements.  However, if capable of creating
+          advertisement, a system SHOULD also support consuming them.
+      </t>
+      <t>
+          To aid debugging, any system capable of creating disseminated prefix
+          advertisements SHOULD allow creating disseminated prefixes from
+          operators.  This also covers the use case where a prefix is
+          statically assigned by an ISP and manually input by an operator.
+      </t>
+      <t>
+          In principle, it does not matter how some prefix becomes available
+          to the system for disseminating, but the expectation is that this
+          primarily happens through DHCPv6-PD or static assignment.  Other
+          methods may require additional considerations.
+      </t>
+
+      <section anchor="adv-policy">
+        <name>Policy factors in disseminating a prefix</name>
+        <t>
+            The following considerations apply to systems capable of creating
+            a disseminated prefix advertisement:
+        </t>
+        <ul>
+          <li>
+              There MUST be a method to constrain acceptable prefixes both
+              in their network bits as well as their prefix length, e.g. a
+              prefix-list style filter.  (This does not apply to explicit,
+              statically configured prefixes as that is already a constraint.)
+          </li>
+          <li>
+              There MUST be some way to limit the number of prefixes
+              disseminated, to prevent resource exhaustion security issues.
+              If the limit is hit, the oldest known prefixes SHOULD be retained
+              over newer ones to reduce churn.
+          </li>
+          <li>
+              If a currently disseminated prefix is known to be withdrawn,
+              its advertisement MUST be withdrawn in a timely manner.
+          </li>
+          <li>
+              If the prefix has known lifetimes, it MUST be possible to exclude
+              prefixes below some specified remaining lifetime.  This lifetime
+              data MUST be propagated into the disseminated prefix data.
+          </li>
+          <li>
+              Other metadata (e.g. from DHCPv6-PD) SHOULD be made available to
+              filter on where useful, and SHOULD be carried in the disseminated
+              prefix if possible.
+          </li>
+        </ul>
+      </section>
+    </section>
+
+    <section anchor="ospf">
+      <name>OSPFv3 transport</name>
+      <t>
+          <em>TBD: which LSA to stick this in?  Make a new one?  Router Info
+          (12)?  Ext. Router LSA (33)?  It's only given as a TLV below, but
+          having it be its own LSA is probably better - in particular, with
+          DHCPv6-PD it may need refreshing whenever the lifetime of the
+          delegation is extended - this shouldn't cause routing system load.
+          Needs discussion.</em>
+      </t>
+      <t>
+          A disseminated prefix is transported in OSPFv3 using an
+          <xref target="OSPFv3-EXT">Extended LSA TLV</xref> with the following
+          format:
+      </t>
+      <artwork name="OSPFv3 Prefix Dissemination Extended LSA TLV">
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|              Type             |             Length            |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+| Prefix Length | PrefixOptions |               0               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                            Prefix                             |
+|                              ...                              |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+:                      Sub-TLVs (variable)                      :</artwork>
+      <dl>
+        <dt>Type</dt>
+        <dd>to be assigned (not sure if possible for experimental?)</dd>
+
+        <dt>Length</dt>
+        <dd><em>TBD</em></dd>
+
+        <dt>Prefix Length, PrefixOptions and Prefix</dt>
+        <dd>
+            These fields behave as specified in <xref target="OSPFv3"/>.
+            For the PrefixOptions field, all bits MUST be set to zero.
+            <em>TODO: determine if some are applicable, possibly P and DN?</em>
+        </dd>
+      </dl>
+      <t>
+          <em>TODO: flesh out, figure how exactly to carry lifetime (in TLV?),
+          add sub-TLVs for e.g. DHCPv6 extra details</em>
+      </t>
+
+      <section>
+        <name>Applicable Sub-TLVs</name>
+        <t>
+            The following preexisting sub-TLVs semantically make sense when
+            nested in the Prefix Dissemination TLV and SHOULD be supported
+            in creating advertisements and filtering for realization:
+        </t>
+        <dl>
+          <dt>(3) Route-Tag sub-TLV</dt>
+          <dd>This sub-TLV may be used to carry operator-defined semantics on a
+            disseminated prefix.  Other uses of this sub-TLV limit it to one
+            occurrence, for consistency this requirement is applied here too.
+          </dd>
+        </dl>
+        <t>
+            Other sub-TLVs MAY be supported to attach attributes to a
+            disseminated prefix and filter upon them. Note that sub-TLVs present
+            in a disseminated prefix (even explicitly listed above) MUST NOT
+            have any effect on routing behavior by themselves. They also MUST
+            NOT be copied or inherited into any use of realized addresses or
+            prefixes, even if that use reflects back into OSPFv3.
+        </t>
+      </section>
+    </section>
+
+    <section anchor="isis">
+      <name>IS-IS transport</name>
+      <t>
+         A disseminated prefix is transported in IS-IS LSPs using a TLV
+         with the following format:
+      </t>
+      <artwork name="IS-IS Prefix Dissemination Extended LSA TLV">
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|      Type     |    Length     |   0   |          MT ID        |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+| Prefix Length |                Prefix  (variable)             |
++-+-+-+-+-+-+-+-+                                               |
+|                              ...                              |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+:                      Sub-TLVs (variable)                      :</artwork>
+      <dl>
+        <dt>Type</dt>
+        <dd>to be assigned (not sure if possible for experimental?)</dd>
+
+        <dt>MT ID</dt>
+        <dd>
+            Topology ID as described in <xref target="IS-IS-MT"/>.  There
+            is no variant of this TLV without topology identifier; while this
+            may waste 2 bytes, this trade-off was chosen against the alternative
+            of creating two TLV types with and without MT ID.  For applicable
+            values see below.
+        </dd>
+
+        <dt>Length</dt>
+        <dd><em>TBD</em></dd>
+
+        <dt>Prefix Length and Prefix</dt>
+        <dd>
+            The Prefix Length field is given in bits, ranging from 0 to 128.
+            As in <xref target="IS-ISv6">RFC5308 Section 2</xref>, the prefix
+            is "packed" and the number of octets used for the prefix is
+            calculated by rounding up to the next byte boundary.
+        </dd>
+      </dl>
+      <t>
+        <em>TODO: flesh out, figure how exactly to carry lifetime (maybe in TLV?),
+        add sub-TLVs for e.g. DHCPv6 extra details.</em>
+      </t>
+      <t>
+        <em>NB: IS-IS TLV (for now) has 255 byte length limit (cf. current drafts
+        on Multi-part / Big TLVs)</em>
+      </t>
+
+      <section>
+        <name>Multi-Topology considerations</name>
+        <t>
+            Multi-Topology IS-IS is often used to allow separate topologies for
+            IPv4 and IPv6, in which case IPv6 information is carried under MT ID
+            #2.  If IPv4 and IPv6 topologies are identical, MT ID #0 may be in
+            use for IPv6.
+        </t>
+        <t>
+            Implementations of this specification MUST by default place
+            disseminated prefix information in the same topology they use for
+            IPv6 routing, and MUST only process information from that same
+            topology. The topology used MAY be configurable.  <em>TBD:
+            other MT IDs?  Exclude multicast and IPv4 specific ones?</em>
+        </t>
+        <t>
+            Implementations not supporting IS-IS multi-topology routing MUST
+            use MT ID #0 for disseminated prefix TLVs and MUST ignore any
+            received TLVs of this type with MT ID unequal zero.
+        </t>
+      </section>
+
+      <section>
+        <name>Applicable Sub-TLVs</name>
+        <t>
+            The following preexisting sub-TLVs semantically make sense when
+            nested in the Prefix Dissemination TLV:
+        </t>
+        <dl>
+          <dt>(1) 32-bit Administrative Tag Sub-TLV</dt>
+          <dd>This sub-TLV may be used to carry operator-defined semantics on a
+            disseminated prefix.  The Sub-TLV may appear more than once.</dd>
+          <dt>(2) 64-bit Administrative Tag Sub-TLV</dt>
+          <dd>Same as above.</dd>
+          <dt><em>TODO: (4) Prefix Attribute Flags</em></dt>
+          <dd><em>for R bit? - if yes then presumably 11 and 12 too
+            (Source Router ID) - need to clear up L1/L2 behavior.</em></dd>
+        </dl>
+        <t>
+            Other sub-TLVs MAY be supported to attach attributes to a
+            disseminated prefix and filter upon them. Note that any (even
+            explicitly listed above) sub-TLVs present in a disseminated prefix
+            MUST NOT have any effect on routing behavior by themselves. They
+            also MUST NOT be copied or inherited into any use of realized
+            addresses or prefixes, even if that use reflects back into IS-IS.
+        </t>
+      </section>
+    </section>
+
+    <section anchor="Security">
+      <name>Security Considerations</name>
+      <t>
+          <em>TBD</em>
+      </t>
+    </section>
+
+    <section anchor="privacy">
+      <name>Privacy Considerations</name>
+      <t>
+          <em>TBD</em>
+      </t>
+    </section>
+
+    <section anchor="IANA">
+      <name>IANA Considerations</name>
+      <t>
+          <em>TBD - needs codepoints for IS-IS and OSPFv3</em>
+      </t>
+    </section>
+  </middle>
+
+  <back>
+    <references>
+      <name>References</name>
+      <references>
+        <name>Normative References</name>
+
+        <reference anchor="IS-IS">
+          <front>
+            <!--   [IS-IS]    ISO/IEC 10589:2002, Second Edition, "", 2002. -->
+            <title>
+              Intermediate System to Intermediate System Intra-Domain Routing
+              Exchange Protocol for use in Conjunction with the Protocol for
+              Providing the Connectionless-mode Network Service (ISO 8473)
+            </title>
+            <author>
+              <organization>ISO/IEC</organization>
+            </author>
+            <date year="2002"/>
+          </front>
+          <seriesInfo name="ISO/IEC" value="10589:2002, Second Edition"/>
+        </reference>
+        <reference anchor="IS-IS-MT" target="https://www.rfc-editor.org/info/rfc5120">
+          <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.5120.xml" xpointer="xpointer(/reference/*)"/>
+        </reference>
+        <reference anchor="IS-ISv6" target="https://www.rfc-editor.org/info/rfc5308">
+          <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.5308.xml" xpointer="xpointer(/reference/*)"/>
+        </reference>
+
+        <reference anchor="OSPFv3" target="https://www.rfc-editor.org/info/rfc5340">
+          <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.5340.xml" xpointer="xpointer(/reference/*)"/>
+        </reference>
+        <reference anchor="OSPFv3-EXT" target="https://www.rfc-editor.org/info/rfc8362">
+          <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.8362.xml" xpointer="xpointer(/reference/*)"/>
+        </reference>
+        <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.2119.xml"/>
+        <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.8174.xml"/>
+      </references>
+
+      <references>
+        <name>Informative References</name>
+        <reference anchor="ADDRCONF" target="https://www.rfc-editor.org/info/rfc4861">
+          <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.4861.xml" xpointer="xpointer(/reference/*)"/>
+        </reference>
+        <reference anchor="DHCPv6" target="https://www.rfc-editor.org/info/rfc8415">
+          <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.8415.xml" xpointer="xpointer(/reference/*)"/>
+        </reference>
+
+        <reference anchor="LEROY">
+          <front>
+            <title>Preparing network configurations for IPv6 renumbering</title>
+            <author asciiSurname="Leroy" initials="D."/>
+            <author asciiSurname="Bonaventure" initials="O."/>
+            <date year="2009"/>
+          </front>
+          <annotation>
+            <eref target="http://inl.info.ucl.ac.be/system/files/dleroy-nem-2009.pdf"/>
+          </annotation>
+          <seriesInfo name="DOI" value="10.1002/nem.717"/>
+          <refcontent>International Journal of Network Management, Volume 19, Issue 5</refcontent>
+        </reference>
+
+        <reference anchor="NEEDSWORK" target="https://www.rfc-editor.org/info/rfc5887">
+          <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.5887.xml" xpointer="xpointer(/reference/*)"/>
+        </reference>
+        <reference anchor="NETCONF" target="https://www.rfc-editor.org/info/rfc6241">
+          <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.6241.xml" xpointer="xpointer(/reference/*)"/>
+        </reference>
+        <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.2894.xml"/>
+        <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.4192.xml"/>
+        <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.6866.xml"/>
+        <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.6879.xml"/>
+        <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.7010.xml"/>
+        <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.7695.xml"/>
+      </references>
+    </references>
+
+    <section anchor="ack" numbered="false">
+      <name>Acknowledgements</name>
+      <t>
+          <em>TBD, FILL IN</em>
+      </t>
+    </section>
+  </back>
+</rfc>
