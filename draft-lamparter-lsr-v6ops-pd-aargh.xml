@@ -661,6 +661,14 @@
       </section>
     </section>
 
+    <section anchor="yang">
+      <name>YANG model</name>
+      <t>
+          <em>well, this certainly needs one, other software will definitely
+          want to pull prefix data out of the routing protocol...</em>
+      </t>
+    </section>
+
     <section anchor="Security">
       <name>Security Considerations</name>
       <t>
@@ -764,6 +772,18 @@
       <t>
           <em>TBD, FILL IN</em>
       </t>
+    </section>
+
+    <section numbered="false">
+      <name>Editing notes (TO BE REMOVED)</name>
+      <t>
+          This draft lives at <eref target="https://github.com/eqvinox/pd-aargh"/>
+      </t>
+      <ul>
+        <li>
+            -00: 2023-07-26 (IETF 117), initial revision.
+        </li>
+      </ul>
     </section>
   </back>
 </rfc>
